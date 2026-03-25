@@ -12,6 +12,8 @@ Latency is measured with :func:`time.perf_counter` and stored on every
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -25,6 +27,13 @@ from app.serving.model_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CACHE_TTL = 300  # seconds
+
+
+def _make_cache_key(version: str, features: list[float]) -> str:
+    payload = json.dumps([version, features], separators=(",", ":"))
+    return "pred:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 @dataclass
@@ -72,10 +81,21 @@ class Predictor:
         print(result.prediction, result.confidence, result.latency_ms)
     """
 
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(self, registry: ModelRegistry, redis_url: str | None = None) -> None:
         self._registry = registry
         # Simple LRU-like in-process model cache: version -> (model, metadata)
         self._model_cache: dict[str, tuple[Any, ModelMetadata]] = {}
+
+        self._redis = None
+        if redis_url:
+            try:
+                import redis as redis_lib
+                self._redis = redis_lib.from_url(redis_url, decode_responses=True)
+                self._redis.ping()
+                logger.info("Predictor: Redis cache connected at %s", redis_url)
+            except Exception as exc:
+                logger.warning("Predictor: Redis unavailable, cache disabled: %s", exc)
+                self._redis = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -103,6 +123,15 @@ class Predictor:
         version = self._resolve_version(model_version)
         model, metadata = self._get_or_load_model(version)
 
+        cache_key = _make_cache_key(version, features)
+        if self._redis is not None:
+            try:
+                cached = self._redis.get(cache_key)
+                if cached is not None:
+                    return PredictionResult(**json.loads(cached))
+            except Exception as exc:
+                logger.warning("Predictor: Redis read failed, skipping cache: %s", exc)
+
         t_start = time.perf_counter()
         try:
             prediction, confidence = self._run_inference(
@@ -120,6 +149,12 @@ class Predictor:
             model_version=version,
             latency_ms=round(latency_ms, 3),
         )
+
+        if self._redis is not None:
+            try:
+                self._redis.setex(cache_key, _CACHE_TTL, json.dumps(result.__dict__))
+            except Exception as exc:
+                logger.warning("Predictor: Redis write failed, skipping cache: %s", exc)
         logger.debug(
             "Prediction: version=%s prediction=%s confidence=%.4f latency=%.2f ms",
             version,
