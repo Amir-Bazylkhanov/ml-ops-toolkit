@@ -82,7 +82,6 @@ def train_torch_model():
 
     print(f"   Accuracy: {accuracy:.4f}")
 
-    # Save model
     version = "v3"
     version_dir = MODELS_DIR / version
     version_dir.mkdir(parents=True, exist_ok=True)
@@ -90,27 +89,15 @@ def train_torch_model():
     model_path = version_dir / "model.pt"
     torch.save(model, model_path)
 
-    metadata = {
-        "version": version,
-        "framework": "pytorch",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "metrics": {"accuracy": round(accuracy, 4)},
-        "description": "PyTorch IrisNet classifier",
-    }
-    with open(version_dir / "metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
-
     print(f"   Saved to {version_dir}\n")
-    return version, model_path
+    return version, model_path, round(accuracy, 4)
 
 
 def main():
     print("=== Deploy PyTorch Model Example ===\n")
 
-    version, model_path = train_torch_model()
+    version, model_path, accuracy = train_torch_model()
 
-    # Note: for Docker-based serving, the model is already in the mounted
-    # volume. The server picks it up on restart or re-scan.
     print("2. Checking server health...")
     try:
         resp = requests.get(f"{BASE_URL}/health", timeout=5)
@@ -118,20 +105,38 @@ def main():
         print(f"   {resp.json()}\n")
     except requests.ConnectionError:
         print("   Server not running. Start with: docker compose up")
-        print(f"   Model saved at {MODELS_DIR / version} — will be loaded on next start.\n")
+        print(f"   Model saved at {MODELS_DIR / version} — register it once the server is up.\n")
         return
 
-    # Activate the torch model
-    print(f"3. Activating {version}...")
+    # Register the model via the API so the in-memory registry knows about it
+    print(f"3. Registering {version} via API...")
+    resp = requests.post(
+        f"{BASE_URL}/model/register",
+        json={
+            "version": version,
+            "model_path": str(model_path),
+            "framework": "pytorch",
+            "metrics": {"accuracy": accuracy},
+            "description": "PyTorch IrisNet classifier",
+        },
+    )
+    if resp.status_code == 200:
+        print(f"   {resp.json()}\n")
+    else:
+        print(f"   Registration failed: {resp.json().get('detail')}\n")
+        return
+
+    # Activate the registered version
+    print(f"4. Activating {version}...")
     resp = requests.post(f"{BASE_URL}/model/activate", json={"version": version})
     if resp.status_code == 200:
         print(f"   {resp.json()}\n")
     else:
-        print(f"   Note: {resp.json().get('detail', 'Server may need restart to detect new model')}\n")
+        print(f"   Activation failed: {resp.json().get('detail')}\n")
         return
 
     # Run predictions
-    print("4. Running predictions with PyTorch model...")
+    print("5. Running predictions with PyTorch model...")
     test_samples = [
         [5.1, 3.5, 1.4, 0.2],
         [7.0, 3.2, 4.7, 1.4],

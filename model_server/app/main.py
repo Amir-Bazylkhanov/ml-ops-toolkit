@@ -45,14 +45,20 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
 
+    from sklearn.datasets import load_iris
+    import numpy as np
+
     registry = ModelRegistry(settings.model_dir)
-    predictor = Predictor(registry)
+    predictor = Predictor(registry, redis_url=settings.redis_url)
     ab_router = ABTestRouter(predictor)
     metrics = MetricsCollector()
     drift_detector = DriftDetector(
         threshold=settings.drift_threshold,
         window_size=1000,
     )
+
+    iris_data = load_iris()
+    drift_detector.set_reference(iris_data.data)
 
     # If models are already registered and an active version exists, set up
     # default A/B config pointing active version to itself (no split).
