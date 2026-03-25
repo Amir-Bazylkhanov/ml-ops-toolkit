@@ -127,20 +127,23 @@ class MetricsCollector:
         """
         self.MODEL_INFO.info({"version": version, "framework": framework})
 
+    _current_active_version: str | None = None
+
     def set_active_model(self, version: str) -> None:
         """Mark *version* as the currently active model.
 
-        Sets the gauge for *version* to ``1`` and resets all other version
-        labels to ``0`` so that only one label is active at any time.
+        Sets the gauge for *version* to ``1`` and resets the previously
+        active version label to ``0`` so that only one label is active
+        at any time.
 
         Args:
             version: Version string of the model now serving traffic.
         """
-        # Reset any previously active version tracked by this gauge.
-        # The Prometheus client does not provide a direct "list all label
-        # sets" API for Gauge, so callers should ensure consistent version
-        # strings across calls.
+        prev = MetricsCollector._current_active_version
+        if prev is not None and prev != version:
+            self.ACTIVE_MODEL.labels(version=prev).set(0)
         self.ACTIVE_MODEL.labels(version=version).set(1)
+        MetricsCollector._current_active_version = version
 
     def record_drift_score(self, score: float) -> None:
         """Update the current data-drift KL-divergence gauge.

@@ -171,9 +171,16 @@ class ModelRegistry:
                 f"Choose one of: {list(_FRAMEWORK_FILENAME)}"
             )
 
-        source = Path(model_path)
+        source = Path(model_path).resolve()
         if not source.exists():
             raise FileNotFoundError(f"Model file not found: {source}")
+
+        # Validate version string to prevent path traversal.
+        if not version or "/" in version or "\\" in version or version.startswith("."):
+            raise ModelRegistryError(
+                f"Invalid version string '{version}'. "
+                "Version must not contain path separators or start with '.'"
+            )
 
         with self._lock:
             if version in self._metadata_cache:
@@ -183,6 +190,11 @@ class ModelRegistry:
                 )
 
             version_dir = self._root / version
+            # Ensure resolved path is inside the registry root.
+            if not version_dir.resolve().is_relative_to(self._root.resolve()):
+                raise ModelRegistryError(
+                    f"Version directory escapes the registry root: {version_dir}"
+                )
             version_dir.mkdir(parents=True, exist_ok=True)
 
             dest_filename = _FRAMEWORK_FILENAME[framework]
